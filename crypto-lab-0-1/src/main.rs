@@ -1,11 +1,13 @@
 use std::io;
-use std::io::Read;
+
+fn rin() -> usize {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    return input.trim().parse().unwrap();
+}
 
 fn main() {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input).unwrap();
-    let args: Vec<i32> = input.split_whitespace().map(|s| s.parse().unwrap()).collect();
 
-    let (a, b, c) = (args[0], args[1], args[2]);
+    let (a, b, c) = (rin(), rin(), rin());
     println!("{} {}", (a + b) % c, a * b % c);
 }
