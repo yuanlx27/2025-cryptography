@@ -41,8 +41,8 @@ mod hill_cipher {
 
     /// Cracks the Hill cipher with given key dimension, plaintext, and ciphertext.
     pub fn crack(key_dim: usize, plaintext: &str, ciphertext: &str) -> (Matrix, Vec<i32>) {
-        let mut x = Matrix::new(key_dim, key_dim, None);
-        let mut y = Matrix::new(key_dim, key_dim, None);
+        let mut x = Matrix::new(key_dim, key_dim);
+        let mut y = Matrix::new(key_dim, key_dim);
 
         let p_nums = plaintext.as_bytes();
         let c_nums = ciphertext.as_bytes();
@@ -60,14 +60,7 @@ mod hill_cipher {
                 });
             });
 
-        // println!("P matrix:\n{}", x);
-        // println!("C matrix:\n{}", y);
-        // println!("P inverse matrix (P_inv):\n{}", x.inv().unwrap());
-        // println!("Identity matrix (P_inv * P):\n{}", x.inv().unwrap() * x.clone());
-
         let key_matrix = x.inv().unwrap() * y;
-
-        // println!("Key matrix:\n{}", key_matrix);
 
         let p_nums: Vec<u8> = p_nums.iter().map(|b| b - b'A').collect();
         let c_nums: Vec<u8> = c_nums.iter().map(|b| b - b'A').collect();
@@ -86,6 +79,7 @@ mod hill_cipher {
 }
 
 mod matrix {
+    use std::cmp::min;
     use std::fmt::{Display, Formatter, Result};
     use std::ops::{Index, IndexMut, Mul};
 
@@ -93,6 +87,7 @@ mod matrix {
         0, 1, 0, 9, 0, 21, 0, 15, 3, 3, 0, 19, 0, 0, 0, 7, 0, 23, 0, 11, 0, 5, 0, 17, 0, 25,
     ];
 
+    #[derive(Clone, Default)]
     pub struct Matrix {
         rows: usize,
         cols: usize,
@@ -100,11 +95,11 @@ mod matrix {
     }
 
     impl Matrix {
-        pub fn new(rows: usize, cols: usize, data: Option<Vec<i32>>) -> Self {
+        pub fn new(rows: usize, cols: usize) -> Self {
             Self {
                 rows,
                 cols,
-                data: data.unwrap_or(vec![0; rows * cols]),
+                data: vec![0i32; rows * cols],
             }
         }
 
@@ -113,7 +108,7 @@ mod matrix {
                 return None;
             }
 
-            let mut augmented = Matrix::new(self.rows, self.cols * 2, None);
+            let mut augmented = Matrix::new(self.rows, self.cols * 2);
             for i in 0..self.rows {
                 for j in 0..self.cols {
                     augmented[(i, j)] = self[(i, j)];
@@ -122,7 +117,7 @@ mod matrix {
             }
             let augmented = augmented.gaussian_elimination()?;
 
-            let mut result = Matrix::new(self.rows, self.cols, None);
+            let mut result = Matrix::new(self.rows, self.cols);
             for i in 0..self.rows {
                 for j in 0..self.cols {
                     result[(i, j)] = augmented[(i, j + self.cols)];
@@ -133,9 +128,9 @@ mod matrix {
 
         fn gaussian_elimination(&self) -> Option<Self> {
             let mut result = self.clone();
-            for col in 0..result.cols {
+            for col in 0..min(result.rows, result.cols) {
                 let mut pivot_row = None;
-                for row in 0..result.rows {
+                for row in col..result.rows {
                     if INV[result[(row, col)] as usize] != 0 {
                         pivot_row = Some(row);
                         break;
@@ -143,38 +138,37 @@ mod matrix {
                 }
                 let pivot_row = pivot_row?;
 
-                for pos in col..result.cols {
-                    result[(pivot_row, pos)] *= INV[result[(pivot_row, col)] as usize];
-                    result[(pivot_row, pos)] %= 26;
+                if pivot_row != col {
+                    for pos in 0..result.cols {
+                        let temp = result[(pivot_row, pos)];
+                        result[(pivot_row, pos)] = result[(col, pos)];
+                        result[(col, pos)] = temp;
+                    }
                 }
 
-                for row in 0..self.rows {
-                    if row == pivot_row {
+                let factor = INV[result[(col, col)] as usize];
+                for pos in col..result.cols {
+                    result[(col, pos)] *= factor;
+                    result[(col, pos)] %= 26;
+                }
+
+                for row in 0..result.rows {
+                    if row == col {
                         continue;
                     }
 
-                    let factor = self[(row, col)];
+                    let factor = result[(row, col)];
                     if factor == 0 {
                         continue;
                     }
 
-                    for pos in col..self.cols {
-                        result[(row, pos)] -= factor * result[(pivot_row, pos)];
+                    for pos in col..result.cols {
+                        result[(row, pos)] -= factor * result[(col, pos)];
                         result[(row, pos)] = (result[(row, pos)] % 26 + 26) % 26;
                     }
                 }
             }
             Some(result)
-        }
-    }
-
-    impl Clone for Matrix {
-        fn clone(&self) -> Self {
-            Self {
-                rows: self.rows,
-                cols: self.cols,
-                data: self.data.clone(),
-            }
         }
     }
 
@@ -209,7 +203,7 @@ mod matrix {
 
         fn mul(self, rhs: Self) -> Self::Output {
             assert_eq!(self.cols, rhs.rows);
-            let mut result = Matrix::new(self.rows, rhs.cols, None);
+            let mut result = Matrix::new(self.rows, rhs.cols);
             for i in 0..self.rows {
                 for j in 0..rhs.cols {
                     for k in 0..self.cols {
