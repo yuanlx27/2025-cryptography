@@ -1,0 +1,238 @@
+use std::io::{self, Read};
+
+const MOD: i64 = 26;
+
+fn mod26(x: i64) -> i64 {
+    ((x % MOD) + MOD) % MOD
+}
+
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    a = a.abs();
+    b = b.abs();
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a.abs()
+}
+
+fn egcd(a: i64, b: i64) -> (i64, i64, i64) {
+    if b == 0 {
+        (a, 1, 0)
+    } else {
+        let (g, x, y) = egcd(b, a % b);
+        (g, y, x - (a / b) * y)
+    }
+}
+
+fn mod_inv(a: i64, m: i64) -> Option<i64> {
+    let (g, x, _) = egcd(a.rem_euclid(m), m);
+    if g == 1 {
+        Some(x.rem_euclid(m))
+    } else {
+        None
+    }
+}
+
+type Mat = Vec<Vec<i64>>;
+type Row = Vec<i64>;
+
+fn mat_identity(n: usize) -> Mat {
+    let mut i = vec![vec![0i64; n]; n];
+    for k in 0..n {
+        i[k][k] = 1;
+    }
+    i
+}
+
+fn mat_mul(a: &Mat, b: &Mat) -> Mat {
+    let n = a.len();
+    let p = b[0].len();
+    let m2 = b.len();
+    let mut r = vec![vec![0i64; p]; n];
+    for i in 0..n {
+        for k in 0..m2 {
+            let aik = a[i][k];
+            if aik == 0 { continue; }
+            for j in 0..p {
+                r[i][j] = mod26(r[i][j] + aik * b[k][j]);
+            }
+        }
+    }
+    r
+}
+
+fn row_mul_mat(row: &Row, m: &Mat) -> Row {
+    let n = row.len();
+    let p = m[0].len();
+    let mut r = vec![0i64; p];
+    for k in 0..n {
+        let rk = row[k];
+        if rk == 0 { continue; }
+        for j in 0..p {
+            r[j] = mod26(r[j] + rk * m[k][j]);
+        }
+    }
+    r
+}
+
+// Inverse of a square matrix modulo 26 using Gauss-Jordan elimination.
+// Returns None if matrix is not invertible mod 26.
+fn mat_inv_mod(a: &Mat) -> Option<Mat> {
+    let n = a.len();
+    let mut left = a.clone();
+    let mut right = mat_identity(n);
+
+    for col in 0..n {
+        // Find a pivot row with a unit (gcd == 1) in current column
+        let mut pivot = None;
+        for r in col..n {
+            if gcd(left[r][col], MOD) == 1 {
+                pivot = Some(r);
+                break;
+            }
+        }
+        let pivot = pivot?;
+        if pivot != col {
+            left.swap(pivot, col);
+            right.swap(pivot, col);
+        }
+
+        let inv = mod_inv(left[col][col], MOD)?;
+        // Normalize pivot row to make pivot 1
+        for j in 0..n {
+            left[col][j] = mod26(left[col][j] * inv);
+            right[col][j] = mod26(right[col][j] * inv);
+        }
+
+        // Eliminate other rows
+        for r in 0..n {
+            if r == col { continue; }
+            let factor = left[r][col];
+            if factor == 0 { continue; }
+            for j in 0..n {
+                left[r][j] = mod26(left[r][j] - factor * left[col][j]);
+                right[r][j] = mod26(right[r][j] - factor * right[col][j]);
+            }
+        }
+    }
+
+    Some(right)
+}
+
+fn letters_to_blocks(s: &str, m: usize) -> Vec<Row> {
+    let letters: Vec<i64> = s
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| (c.to_ascii_uppercase() as u8 - b'A') as i64)
+        .collect();
+    assert!(letters.len() % m == 0, "Text length not multiple of m");
+    letters.chunks(m).map(|ch| ch.to_vec()).collect()
+}
+
+// Generate all combinations of size k from a list of indices
+fn combinations(indices: &[usize], k: usize, start: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+    if cur.len() == k {
+        out.push(cur.clone());
+        return;
+    }
+    for i in start..indices.len() {
+        cur.push(indices[i]);
+        combinations(indices, k, i + 1, cur, out);
+        cur.pop();
+    }
+}
+
+fn main() {
+    // Read all stdin
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    let mut it = input.split_whitespace();
+
+    let m: usize = it
+        .next()
+        .expect("Missing m")
+        .parse()
+        .expect("m must be an integer");
+
+    let plaintext: String = it.next().expect("Missing plaintext").to_string();
+    let ciphertext: String = it.next().expect("Missing ciphertext").to_string();
+
+    let x_blocks = letters_to_blocks(&plaintext, m);
+    let y_blocks = letters_to_blocks(&ciphertext, m);
+
+    let n = x_blocks.len();
+    assert!(n == y_blocks.len(), "Plaintext and ciphertext block counts differ");
+    assert!(n >= m + 1, "Need at least m+1 blocks to recover key");
+
+    // Search for suitable blocks
+    let mut solved_l: Option<Mat> = None;
+    let mut solved_b: Option<Row> = None;
+
+    'outer: for i0 in 0..n {
+        // All other indices
+        let others: Vec<usize> = (0..n).filter(|&i| i != i0).collect();
+        let mut combs = Vec::new();
+        combinations(&others, m, 0, &mut Vec::new(), &mut combs);
+
+        for combo in combs {
+            // Build A and B with difference rows against i0
+            let mut a = vec![vec![0i64; m]; m];
+            let mut b = vec![vec![0i64; m]; m];
+            for (r, &idx) in combo.iter().enumerate() {
+                for c in 0..m {
+                    a[r][c] = mod26(x_blocks[idx][c] - x_blocks[i0][c]);
+                    b[r][c] = mod26(y_blocks[idx][c] - y_blocks[i0][c]);
+                }
+            }
+
+            if let Some(a_inv) = mat_inv_mod(&a) {
+                // L = A^{-1} * B
+                let l = mat_mul(&a_inv, &b);
+                // b_vec = y0 - x0 * L
+                let x0_l = row_mul_mat(&x_blocks[i0], &l);
+                let mut b_vec = vec![0i64; m];
+                for j in 0..m {
+                    b_vec[j] = mod26(y_blocks[i0][j] - x0_l[j]);
+                }
+
+                // Verify across all blocks
+                let mut ok = true;
+                for t in 0..n {
+                    let mut y_hat = row_mul_mat(&x_blocks[t], &l);
+                    for j in 0..m {
+                        y_hat[j] = mod26(y_hat[j] + b_vec[j]);
+                    }
+                    if y_hat != y_blocks[t] {
+                        ok = false;
+                        break;
+                    }
+                }
+
+                if ok {
+                    solved_l = Some(l);
+                    solved_b = Some(b_vec);
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    let l = solved_l.expect("Failed to recover L");
+    let b = solved_b.expect("Failed to recover b");
+
+    // Output: key matrix then offset vector
+    for r in 0..m {
+        for c in 0..m {
+            if c > 0 { print!(" "); }
+            print!("{}", l[r][c]);
+        }
+        println!();
+    }
+    for j in 0..m {
+        if j > 0 { print!(" "); }
+        print!("{}", b[j]);
+    }
+    println!();
+}
