@@ -46,8 +46,8 @@ mod hill_cipher {
 
         let p_nums = plaintext.as_bytes();
         let c_nums = ciphertext.as_bytes();
-        plaintext.as_bytes().chunks(key_dim)
-            .zip(ciphertext.as_bytes().chunks(key_dim))
+        p_nums.chunks(key_dim)
+            .zip(c_nums.chunks(key_dim))
             .skip(1)
             .take(key_dim)
             .enumerate()
@@ -59,8 +59,22 @@ mod hill_cipher {
                     y[(i, j)] = ((c + 26 - c_nums[j]) % 26) as i32;
                 });
             });
+        let mut pos = key_dim * key_dim;
 
-        let key_matrix = x.inv().unwrap() * y;
+        let key_matrix = loop {
+            if let Some(x_inv) = x.inv() {
+                break x_inv * y;
+            }
+
+            pos += key_dim;
+            p_nums[pos..pos + key_dim].iter()
+                .zip(c_nums[pos..pos + key_dim].iter())
+                .enumerate()
+                .for_each(|(j, (p, c))| {
+                    x[(0, j)] = ((p + 26 - p_nums[j]) % 26) as i32;
+                    y[(0, j)] = ((c + 26 - c_nums[j]) % 26) as i32;
+                });
+        };
 
         let p_nums: Vec<u8> = p_nums.iter().map(|b| b - b'A').collect();
         let c_nums: Vec<u8> = c_nums.iter().map(|b| b - b'A').collect();
@@ -202,14 +216,13 @@ mod matrix {
         type Output = Self;
 
         fn mul(self, rhs: Self) -> Self::Output {
-            assert_eq!(self.cols, rhs.rows);
             let mut result = Matrix::new(self.rows, rhs.cols);
             for i in 0..self.rows {
                 for j in 0..rhs.cols {
                     for k in 0..self.cols {
                         result[(i, j)] += self[(i, k)] * rhs[(k, j)];
                     }
-                    result[(i, j)] = (result[(i, j)] % 26 + 26) % 26;
+                    result[(i, j)] %= 26;
                 }
             }
             result
