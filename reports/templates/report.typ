@@ -43,10 +43,10 @@
 
   #pagebreak()
 
-  #set text(
-    lang: "zh",
-    font: "Noto Sans CJK SC",
-  )
+  // #set text(
+  //   lang: "zh",
+  //   font: "Noto Sans CJK SC",
+  // )
 
   #body
 ]
