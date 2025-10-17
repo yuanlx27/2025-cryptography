@@ -1,0 +1,10 @@
+[package]
+name = "code"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+online_judge = []
+
+[dependencies]
+crypto-bigint = "0.6.1"
