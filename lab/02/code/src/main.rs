@@ -1,4 +1,8 @@
-use std::{env::var, fs::File, io::{Read, Write, stdin, stdout}, iter::once};
+use std::{
+    env::var,
+    fs::File,
+    io::{Read, Write, stdin, stdout},
+};
 
 fn main() {
     let mut reader: Box<dyn Read> = if cfg!(feature = "online_judge") {
@@ -22,29 +26,49 @@ fn main() {
         let mut buffer = [0u8; 1];
         reader.read_exact(&mut buffer).unwrap();
         let op_type = buffer[0];
-
-        let mut buffer = [0u8; 24];
-        reader.read_exact(&mut buffer).unwrap();
-        let a = u131::from_le_bytes(buffer);
-
-        let mut buffer = [0u8; 24];
-        reader.read_exact(&mut buffer).unwrap();
-        let b = u131::from_le_bytes(buffer);
     }
 }
 
 #[allow(non_camel_case_types)]
-struct u131(u128, u8);
+type u131 = [u64; 3];
 
-impl u131 {
-    fn from_le_bytes(bytes: [u8; 24]) -> Self {
-        Self(u128::from_le_bytes(bytes[0..16].try_into().unwrap()), bytes[16])
+trait IntExt {
+    fn add(&self, rhs: &Self) -> Self;
+    fn mul(&self, rhs: &Self) -> Self;
+    fn square(&self) -> Self;
+}
+
+impl IntExt for u131 {
+    fn add(&self, rhs: &Self) -> Self {
+        [
+            self[0] ^ rhs[0],
+            self[1] ^ rhs[1],
+            self[2] ^ rhs[2],
+        ]
     }
 
-    fn to_le_bytes(&self) -> [u8; 24] {
-        let mut bytes = [0u8; 24];
-        bytes[0..16].copy_from_slice(&self.0.to_le_bytes());
-        bytes[16] = self.1;
-        bytes
+    fn mul(&self, rhs: &Self) -> Self {
+        let mut a = [0u8; 131];
+        for i in 0..131 {
+            a[i] = (self[i / 64] >> (i % 64) & 1) as u8;
+        }
+
+        let mut b = [0u8; 131];
+        for i in 0..131 {
+            b[i] = (rhs[i / 64] >> (i % 64) & 1) as u8;
+        }
+
+        let mut c = [0u8; 262];
+        for i in 0..131 {
+            for j in 0..131 {
+                c[i + j] ^= a[i] & b[j];
+            }
+        }
+
+        todo!()
+    }
+
+    fn square(&self) -> Self {
+        todo!()
     }
 }
