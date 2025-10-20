@@ -1,7 +1,14 @@
-use std::{
-    env::var,
-    fs::File,
-    io::{Read, Write, stdin, stdout},
+use std::env::var;
+use std::fs::File;
+use std::io::{Read, Write, stdin, stdout};
+
+const N: usize = 131;
+
+const P: [u8; 24] = {
+    let mut p = [0u8; 24];
+    p[0] = 0b00000111;
+    p[1] = 0b00100000;
+    p
 };
 
 fn main() {
@@ -18,57 +25,81 @@ fn main() {
         Box::new(File::create(format!("samples/sample{tc}_out.bin")).unwrap())
     };
 
-    let mut buffer = [0u8; 4];
-    reader.read_exact(&mut buffer).unwrap();
-    let op_count = u32::from_le_bytes(buffer) as usize;
-
-    for _ in 0..op_count {
-        let mut buffer = [0u8; 1];
+    let n = {
+        let mut buffer = [0u8; 4];
         reader.read_exact(&mut buffer).unwrap();
-        let op_type = buffer[0];
+        u32::from_le_bytes(buffer) as usize
+    };
+
+    for _ in 0..n {
+        let op_type = {
+            let mut buffer = [0u8; 1];
+            reader.read_exact(&mut buffer).unwrap();
+            buffer[0]
+        };
+
+        let a = {
+            let mut buffer = [0u8; 24];
+            reader.read_exact(&mut buffer).unwrap();
+            buffer
+        };
+
+        let b = {
+            let mut buffer = [0u8; 24];
+            reader.read_exact(&mut buffer).unwrap();
+            buffer
+        };
+
+        let result = match op_type {
+            0 => add(a, b),
+            1 => mul(a, b),
+            2 => square(a),
+            3 => invert(a),
+            _ => panic!("Invalid operation type."),
+        };
+        writer.write_all(&result).unwrap();
     }
 }
 
-#[allow(non_camel_case_types)]
-type u131 = [u64; 3];
-
-trait IntExt {
-    fn add(&self, rhs: &Self) -> Self;
-    fn mul(&self, rhs: &Self) -> Self;
-    fn square(&self) -> Self;
+fn add(a: [u8; 24], b: [u8; 24]) -> [u8; 24] {
+    (0..24)
+        .map(|i| a[i] ^ b[i])
+        .collect::<Vec<u8>>()
+        .try_into()
+        .unwrap()
 }
 
-impl IntExt for u131 {
-    fn add(&self, rhs: &Self) -> Self {
-        [
-            self[0] ^ rhs[0],
-            self[1] ^ rhs[1],
-            self[2] ^ rhs[2],
-        ]
-    }
+fn mul(a: [u8; 24], b: [u8; 24]) -> [u8; 24] {
+    let mut res = [0u8; 24];
 
-    fn mul(&self, rhs: &Self) -> Self {
-        let mut a = [0u8; 131];
-        for i in 0..131 {
-            a[i] = (self[i / 64] >> (i % 64) & 1) as u8;
-        }
-
-        let mut b = [0u8; 131];
-        for i in 0..131 {
-            b[i] = (rhs[i / 64] >> (i % 64) & 1) as u8;
-        }
-
-        let mut c = [0u8; 262];
-        for i in 0..131 {
-            for j in 0..131 {
-                c[i + j] ^= a[i] & b[j];
+    let mut reduce = false;
+    let mut temp = [0u8; 24];
+    for i in 0..N {
+        for j in 0..N {
+            if i + j < N {
+                res[(i + j) / 8] ^= (((a[i / 8] >> (i % 8)) & 1) & ((b[j / 8] >> (j % 8)) & 1)) << ((i + j) % 8);
+            } else {
+                reduce = true;
+                temp[(i + j - N) / 8] ^= (((a[i / 8] >> (i % 8)) & 1) & ((b[j / 8] >> (j % 8)) & 1)) << ((i + j - N) % 8);
             }
         }
-
-        todo!()
     }
 
-    fn square(&self) -> Self {
-        todo!()
+    if reduce {
+        add(res, mul(P, temp))
+    } else {
+        res
     }
+}
+
+fn square(a: [u8; 24]) -> [u8; 24] {
+    let mut res = [0u8; 24];
+    for i in 0..N.div_ceil(2) {
+        res[(i * 2) / 8] ^= ((a[i / 8] >> (i % 8)) & 1) << ((i * 2) % 8);
+    }
+    res
+}
+
+fn invert(a: [u8; 24]) -> [u8; 24] {
+    todo!()
 }
