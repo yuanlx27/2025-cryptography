@@ -35,7 +35,7 @@ fn main() {
         let op_type = {
             let mut buffer = [0u8; 1];
             reader.read_exact(&mut buffer).unwrap();
-            buffer[0]
+            buffer[0] as usize
         };
 
         let a = {
@@ -61,6 +61,13 @@ fn main() {
     }
 }
 
+fn get(a: &[u8], i: usize) -> u8 {
+    (a[i / 8] >> (i % 8)) & 1
+}
+fn xor(a: &mut [u8], i: usize, v: u8) {
+    a[i / 8] ^= (v & 1) << (i % 8);
+}
+
 fn add(a: [u8; 24], b: [u8; 24]) -> [u8; 24] {
     (0..24)
         .map(|i| a[i] ^ b[i])
@@ -70,32 +77,28 @@ fn add(a: [u8; 24], b: [u8; 24]) -> [u8; 24] {
 }
 
 fn mul(a: [u8; 24], b: [u8; 24]) -> [u8; 24] {
-    let mut res = [0u8; 24];
-
-    let mut reduce = false;
-    let mut temp = [0u8; 24];
+    let mut res = [0u8; 48];
     for i in 0..N {
         for j in 0..N {
-            if i + j < N {
-                res[(i + j) / 8] ^= (((a[i / 8] >> (i % 8)) & 1) & ((b[j / 8] >> (j % 8)) & 1)) << ((i + j) % 8);
-            } else {
-                reduce = true;
-                temp[(i + j - N) / 8] ^= (((a[i / 8] >> (i % 8)) & 1) & ((b[j / 8] >> (j % 8)) & 1)) << ((i + j - N) % 8);
-            }
+            xor(&mut res, i + j, get(&a, i) & get(&b, j));
+        }
+    }
+    for i in (N..(N + N - 1)).rev() {
+        if get(&res, i) != 0 {
+            xor(&mut res, i - N, 1);
+            xor(&mut res, i - N + 1, 1);
+            xor(&mut res, i - N + 2, 1);
+            xor(&mut res, i - N + 13, 1);
         }
     }
 
-    if reduce {
-        add(res, mul(P, temp))
-    } else {
-        res
-    }
+    res[0..24].try_into().unwrap()
 }
 
 fn square(a: [u8; 24]) -> [u8; 24] {
     let mut res = [0u8; 24];
     for i in 0..N.div_ceil(2) {
-        res[(i * 2) / 8] ^= ((a[i / 8] >> (i % 8)) & 1) << ((i * 2) % 8);
+        xor(&mut res, i * 2, get(&a, i));
     }
     res
 }
