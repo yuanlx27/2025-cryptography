@@ -4,11 +4,10 @@ use std::io::{Read, Write, stdin, stdout};
 
 const N: usize = 131;
 
-const P: [u8; 24] = {
-    let mut p = [0u8; 24];
-    p[0] = 0b00000111;
-    p[1] = 0b00100000;
-    p
+const I: [u8; 24] = {
+    let mut arr = [0u8; 24];
+    arr[0] = 0b00000001;
+    arr
 };
 
 fn main() {
@@ -105,4 +104,77 @@ fn square(a: [u8; 24]) -> [u8; 24] {
 
 fn invert(a: [u8; 24]) -> [u8; 24] {
     todo!()
+}
+
+fn exgcd(a: [u8; 24], b: [u8; 24]) -> ([u8; 24], [u8; 24]) {
+}
+
+mod finite_field {
+    use core::ops::{Add, Mul, Div};
+
+    const N: usize = 131;
+
+    #[allow(non_camel_case_types)]
+    struct u131([u128; 4]);
+
+    impl u131 {
+        fn new() -> Self {
+            Self([0u128; 4])
+        }
+
+        fn from_le_bytes(bytes: [u8; 24]) -> Self {
+            let mut arr = [0u128; 4];
+            arr[0] = u128::from_le_bytes(bytes[0..16].try_into().unwrap());
+            arr[1] = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as u128;
+            Self(arr)
+        }
+
+        fn to_le_bytes(&self) -> [u8; 24] {
+            let mut bytes = [0u8; 24];
+            bytes[0..16].copy_from_slice(&self.0[0].to_le_bytes());
+            bytes[16..24].copy_from_slice(&(self.0[1] as u64).to_le_bytes());
+            bytes
+        }
+    }
+
+    impl Add for u131 {
+        type Output = Self;
+
+        fn add(self, rhs: Self) -> Self::Output {
+            Self([
+                self.0[0] ^ rhs.0[0],
+                self.0[1] ^ rhs.0[1],
+                self.0[2] ^ rhs.0[2],
+                self.0[3] ^ rhs.0[3],
+            ])
+        }
+    }
+
+    impl Mul for u131 {
+        type Output = Self;
+
+        fn mul(self, rhs: Self) -> Self::Output {
+            let mut a = [0u8; N];
+            (0..N).for_each(|i| a[i] = ((self.0[i / 128] >> (i % 128)) & 1) as u8);
+
+            let mut b = [0u8; N];
+            (0..N).for_each(|i| b[i] = ((rhs.0[i / 128] >> (i % 128)) & 1) as u8);
+
+            let mut c = [0u8; N + N - 1];
+            for i in 0..N {
+                for j in 0..N {
+                    c[i + j] ^= a[i] & b[j];
+                }
+            }
+
+            let mut res = Self::new();
+            (0..(N + N - 1)).rev().for_each(|i| res.0[i / 128] ^= (c[i] as u128) << (i % 128));
+
+            res
+        }
+    }
+
+    impl Div for u131 {
+
+    }
 }
