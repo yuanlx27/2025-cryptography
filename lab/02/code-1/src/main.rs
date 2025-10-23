@@ -1,20 +1,17 @@
-use std::env::var;
-use std::fs::File;
-use std::io::{Read, Write, stdin, stdout};
+use std::fs;
+use std::io;
 use finite_field::u131;
 
-fn main() {
-    let mut reader: Box<dyn Read> = if cfg!(feature = "online_judge") {
-        Box::new(stdin())
+fn main() -> io::Result<()> {
+    let mut reader: Box<dyn io::Read> = if cfg!(feature = "online_judge") {
+        Box::new(io::stdin())
     } else {
-        let tc = var("TESTCASE").unwrap();
-        Box::new(File::open(format!("samples/sample{tc}_in.bin")).unwrap())
+        Box::new(fs::File::open("sample/input.bin")?)
     };
-    let mut writer: Box<dyn Write> = if cfg!(feature = "online_judge") {
-        Box::new(stdout())
+    let mut writer: Box<dyn io::Write> = if cfg!(feature = "online_judge") {
+        Box::new(io::stdout())
     } else {
-        let tc = var("TESTCASE").unwrap();
-        Box::new(File::create(format!("samples/sample{tc}_out.bin")).unwrap())
+        Box::new(fs::File::create("sample/output.bin")?)
     };
 
     let n = {
@@ -49,6 +46,8 @@ fn main() {
         };
         writer.write_all(&result.into_le_bytes()).unwrap();
     }
+
+    Ok(())
 }
 
 mod finite_field {
