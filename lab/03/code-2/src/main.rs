@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::sync::LazyLock;
 
 const SBOX: [u8; 256] = [
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
@@ -19,7 +20,6 @@ const SBOX: [u8; 256] = [
     0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
-
 const INV_SBOX: [u8; 256] = [
     0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
     0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
@@ -39,7 +39,38 @@ const INV_SBOX: [u8; 256] = [
     0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 ];
 
-const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
+const RCON: [u32; 10] = [
+    0x01000000,
+    0x02000000,
+    0x04000000,
+    0x08000000,
+    0x10000000,
+    0x20000000,
+    0x40000000,
+    0x80000000,
+    0x1b000000,
+    0x36000000,
+];
+
+static TABLE: LazyLock<([u8; 256], [u8; 256])> = LazyLock::new(|| {
+    let mut table = [0u8; 256];
+    let mut inv_table = [0u8; 256];
+
+    table[0] = 1;
+    for i in 1..256 {
+        let mut temp = (table[i - 1] << 1) as u16 ^ table[i - 1] as u16;
+        if temp & 0x100 != 0 {
+            temp ^= 0x11b;
+        }
+        table[i] = temp as u8;
+    }
+
+    for i in 0..256 {
+        inv_table[table[i] as usize] = i as u8;
+    }
+
+    (table, inv_table)
+});
 
 fn main() {
     let mut reader: Box<dyn io::Read> = if cfg!(feature = "online_judge") {
@@ -88,10 +119,45 @@ fn main() {
         0x81 => decrypt(&key, &iv, &text),
         _ => panic!("Invalid mode."),
     };
+
     writer.write_all(&result).unwrap();
 }
 
+fn key_expansion(key: &[u8; 16]) -> [u32; 44] {
+    let mut words = [0u32; 44];
+    for i in 0..4 {
+        words[i] = u32::from_be_bytes(key[(i * 4)..(i * 4 + 4)].try_into().unwrap());
+    }
+    for i in 4..44 {
+        let mut temp = words[i - 1];
+        if i % 4 == 0 {
+            temp = u32::from_be_bytes(sub_word(&rot_word(&temp.to_be_bytes()))) ^ RCON[i / 4];
+        }
+        words[i] = words[i - 4] ^ temp;
+    }
+    words
+}
+
+fn rot_word(word: &[u8; 4]) -> [u8; 4] {
+    [
+        word[1],
+        word[2],
+        word[3],
+        word[0],
+    ]
+}
+
+fn sub_word(word: &[u8; 4]) -> [u8; 4] {
+    [
+        SBOX[word[0] as usize],
+        SBOX[word[1] as usize],
+        SBOX[word[2] as usize],
+        SBOX[word[3] as usize],
+    ]
+}
+
 fn encrypt(key: &[u8; 16], iv: &[u8; 16], text: &[u8]) -> Vec::<u8> {
+
 }
 
 fn decrypt(key: &[u8; 16], iv: &[u8; 16], text: &[u8]) -> Vec::<u8> {
@@ -101,4 +167,58 @@ fn add_round_key(state: &mut [u8; 16], round_key: &[u8; 16]) {
     for i in 0..16 {
         state[i] ^= round_key[i];
     }
+}
+
+fn sub_bytes(state: &mut [u8; 16]) {
+    for i in 0..16 {
+        state[i] = SBOX[state[i] as usize];
+    }
+}
+fn inv_sub_bytes(state: &mut [u8; 16]) {
+    for i in 0..16 {
+        state[i] = INV_SBOX[state[i] as usize];
+    }
+}
+
+fn shift_rows(state: &mut [u8; 16]) {
+    for i in 0..4 {
+        let temp = state[(i * 4)..(i * 4 + 4)].to_owned();
+        for j in 0..4 {
+            state[i * 4 + (j + i) % 4] = temp[j];
+        }
+    }
+}
+fn inv_shift_rows(state: &mut [u8; 16]) {
+    for i in 1..4 {
+        let temp = state[(i * 4)..(i * 4 + 4)].to_owned();
+        for j in 0..4 {
+            state[i * 4 + (j + 4 - i) % 4] = temp[j];
+        }
+    }
+}
+
+fn mix_columns(state: &mut [u8; 16]) {
+    for i in 0..4 {
+        let a = state[(i * 4)..(i * 4 + 4)].to_owned();
+        state[i * 4] = gmul(a[0], 0x02) ^ gmul(a[1], 0x03) ^ a[2] ^ a[3];
+        state[i * 4 + 1] = a[0] ^ gmul(a[1], 0x02) ^ gmul(a[2], 0x03) ^ a[3];
+        state[i * 4 + 2] = a[0] ^ a[1] ^ gmul(a[2], 0x02) ^ gmul(a[3], 0x03);
+        state[i * 4 + 3] = gmul(a[0], 0x03) ^ a[1] ^ a[2] ^ gmul(a[3], 0x02);
+    }
+}
+fn inv_mix_columns(state: &mut [u8; 16]) {
+    for i in 0..4 {
+        let a = state[(i * 4)..(i * 4 + 4)].to_owned();
+        state[i * 4] = gmul(a[0], 0x0e) ^ gmul(a[1], 0x0b) ^ gmul(a[2], 0x0d) ^ gmul(a[3], 0x09);
+        state[i * 4 + 1] = gmul(a[0], 0x09) ^ gmul(a[1], 0x0e) ^ gmul(a[2], 0x0b) ^ gmul(a[3], 0x0d);
+        state[i * 4 + 2] = gmul(a[0], 0x0d) ^ gmul(a[1], 0x09) ^ gmul(a[2], 0x0e) ^ gmul(a[3], 0x0b);
+        state[i * 4 + 3] = gmul(a[0], 0x0b) ^ gmul(a[1], 0x0d) ^ gmul(a[2], 0x09) ^ gmul(a[3], 0x0e);
+    }
+}
+
+fn gmul(a: u8, b: u8) -> u8 {
+   if a == 0 || b == 0 {
+       return 0;
+   }
+   TABLE.0[((TABLE.1[a as usize] as u16 + TABLE.1[b as usize] as u16) % 255) as usize]
 }
