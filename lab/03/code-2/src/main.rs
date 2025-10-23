@@ -20,6 +20,7 @@ const SBOX: [u8; 256] = [
     0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
+
 const INV_SBOX: [u8; 256] = [
     0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
     0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
@@ -39,18 +40,7 @@ const INV_SBOX: [u8; 256] = [
     0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 ];
 
-const RCON: [u32; 10] = [
-    0x01000000,
-    0x02000000,
-    0x04000000,
-    0x08000000,
-    0x10000000,
-    0x20000000,
-    0x40000000,
-    0x80000000,
-    0x1b000000,
-    0x36000000,
-];
+const RCON: [u8; 11] = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
 static TABLE: LazyLock<([u8; 256], [u8; 256])> = LazyLock::new(|| {
     let mut table = [0u8; 256];
@@ -58,7 +48,7 @@ static TABLE: LazyLock<([u8; 256], [u8; 256])> = LazyLock::new(|| {
 
     table[0] = 1;
     for i in 1..256 {
-        let mut temp = (table[i - 1] << 1) as u16 ^ table[i - 1] as u16;
+        let mut temp = ((table[i - 1] as u16) << 1) ^ table[i - 1] as u16;
         if temp & 0x100 != 0 {
             temp ^= 0x11b;
         }
@@ -101,8 +91,15 @@ fn main() {
         }
         buf
     };
+    let words = key_expansion(&key).chunks(4).map(|chunk| {
+        let mut round_key = [0u8; 16];
+        for i in 0..4 {
+            round_key[(i * 4)..(i * 4 + 4)].copy_from_slice(&chunk[i].to_be_bytes());
+        }
+        round_key
+    }).collect::<Vec<[u8; 16]>>();
 
-    let mut iv = {
+    let iv = {
         let mut buf = [0u8; 16];
         reader.read_exact(&mut buf).unwrap();
 
@@ -126,17 +123,9 @@ fn main() {
         buf
     };
 
-    let words = key_expansion(&key).chunks(4).map(|chunk| {
-        let mut round_key = [0u8; 16];
-        for i in 0..4 {
-            round_key[(i * 4)..(i * 4 + 4)].copy_from_slice(&chunk[i].to_be_bytes());
-        }
-        round_key
-    }).collect::<Vec<[u8; 16]>>();
-
     let result = match mode {
-        0x01 => encrypt(&words, &mut iv, &text),
-        0x81 => decrypt(&words, &mut iv, &text),
+        0x01 => encrypt(&words, &iv, &text),
+        0x81 => decrypt(&words, &iv, &text),
         _ => panic!("Invalid mode."),
     };
 
@@ -151,7 +140,7 @@ fn key_expansion(key: &[u8; 16]) -> [u32; 44] {
     for i in 4..44 {
         let mut temp = words[i - 1];
         if i % 4 == 0 {
-            temp = u32::from_be_bytes(sub_word(&rot_word(&temp.to_be_bytes()))) ^ RCON[i / 4];
+            temp = u32::from_be_bytes(sub_word(&rot_word(&temp.to_be_bytes()))) ^ ((RCON[i / 4] as u32) << 24);
         }
         words[i] = words[i - 4] ^ temp;
     }
@@ -176,18 +165,19 @@ fn sub_word(word: &[u8; 4]) -> [u8; 4] {
     ]
 }
 
-fn encrypt(words: &[[u8; 16]], iv: &mut [u8; 16], text: &[u8]) -> Vec<u8> {
+fn encrypt(words: &[[u8; 16]], iv: &[u8; 16], text: &[u8]) -> Vec<u8> {
     let mut state = text.to_vec();
     let padding_len = 16 - (state.len() % 16);
     for _ in 0..padding_len {
         state.push(padding_len as u8);
     }
 
+    let mut last = *iv;
     state.chunks(16).map(move |chunk| {
         let mut state = [0u8; 16];
         for i in 0..4 {
             for j in 0..4 {
-                state[i * 4 + j] = chunk[j * 4 + i] ^ iv[i * 4 + j];
+                state[i * 4 + j] = chunk[j * 4 + i] ^ last[i * 4 + j];
             }
         }
 
@@ -204,7 +194,7 @@ fn encrypt(words: &[[u8; 16]], iv: &mut [u8; 16], text: &[u8]) -> Vec<u8> {
         shift_rows(&mut state);
         add_round_key(&mut state, &words[10]);
 
-        *iv = state;
+        last = state;
         for i in 0..4 {
             for j in 0..4 {
                 state[i * 4 + j] = iv[j * 4 + i];
@@ -214,12 +204,13 @@ fn encrypt(words: &[[u8; 16]], iv: &mut [u8; 16], text: &[u8]) -> Vec<u8> {
     }).collect::<Vec<[u8; 16]>>().concat()
 }
 
-fn decrypt(words: &[[u8; 16]], iv: &mut [u8; 16], text: &[u8]) -> Vec<u8> {
+fn decrypt(words: &[[u8; 16]], iv: &[u8; 16], text: &[u8]) -> Vec<u8> {
+    let mut last = *iv;
     let mut state = text.chunks(16).map(move |chunk| {
         let mut state = [0u8; 16];
         for i in 0..4 {
             for j in 0..4 {
-                state[i * 4 + j] = chunk[j * 4 + i] ^ iv[i * 4 + j];
+                state[i * 4 + j] = chunk[j * 4 + i] ^ last[i * 4 + j];
             }
         }
 
@@ -236,7 +227,7 @@ fn decrypt(words: &[[u8; 16]], iv: &mut [u8; 16], text: &[u8]) -> Vec<u8> {
 
         add_round_key(&mut state, &words[0]);
 
-        *iv = state;
+        last = state;
         for i in 0..4 {
             for j in 0..4 {
                 state[i * 4 + j] = iv[j * 4 + i];
