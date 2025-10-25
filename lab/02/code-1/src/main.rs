@@ -1,6 +1,8 @@
 use std::fs;
 use std::io;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Shl};
+
+const N: usize = 131;
 
 fn main() -> io::Result<()> {
     let mut reader: Box<dyn io::Read> = if cfg!(feature = "online_judge") {
@@ -53,6 +55,7 @@ fn main() -> io::Result<()> {
 }
 
 #[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Default)]
 struct u131 {
     data: [u128; 3],
 }
@@ -60,11 +63,11 @@ struct u131 {
 impl Add for u131 {
     type Output = Self;
 
-    fn add(self, other: Self) -> Self {
+    fn add(self, rhs: Self) -> Self {
         Self {
             data: [
-                self.data[0] ^ other.data[0],
-                self.data[1] ^ other.data[1],
+                self.data[0] ^ rhs.data[0],
+                self.data[1] ^ rhs.data[1],
                 0,
             ],
         }
@@ -74,8 +77,46 @@ impl Add for u131 {
 impl Mul for u131 {
     type Output = Self;
 
-    fn mul(self, other: Self) -> Self {
-        todo!()
+    fn mul(self, rhs: Self) -> Self {
+        let mut res = Self::default();
+        for i in 0..N {
+            if self.data[i / 128] >> (i % 128) & 1 != 0 {
+                res = res + (rhs << i);
+            }
+        }
+        res.rem()
+    }
+}
+
+impl Shl<usize> for u131 {
+    type Output = Self;
+
+    fn shl(self, rhs: usize) -> Self {
+        match rhs {
+            0 => self,
+            1..128 => Self {
+                data: [
+                    self.data[0] << rhs,
+                    self.data[1] << rhs ^ self.data[0] >> (128 - rhs),
+                    self.data[2] << rhs ^ self.data[1] >> (128 - rhs),
+                ],
+            },
+            128 => Self {
+                data: [
+                    0,
+                    self.data[0],
+                    self.data[1],
+                ],
+            },
+            129..N => Self {
+                data: [
+                    0,
+                    self.data[0] << (rhs - 128),
+                    self.data[1] << (rhs - 128) ^ self.data[0] >> (256 - rhs),
+                ],
+            },
+            _ => panic!("Shift amount out of range."),
+        }
     }
 }
 
@@ -95,6 +136,24 @@ impl u131 {
         bytes[0..16].copy_from_slice(&self.data[0].to_le_bytes());
         bytes[16..24].copy_from_slice(&(self.data[1] as u64).to_le_bytes());
         bytes
+    }
+
+    fn rem(&self) -> Self {
+        let mut res = *self;
+
+        let x = res.data[2] << 125;
+        res.data[0] ^= x ^ (x << 1) ^ (x << 2);
+
+        let x = res.data[2] >> 3;
+        res.data[1] ^= x ^ (x << 1) ^ (x << 2) ^ (x << 13);
+
+        let x = res.data[1] >> 3;
+        res.data[0] ^= x ^ (x << 1) ^ (x << 2) ^ (x << 13);
+
+        res.data[2] &= 0;
+        res.data[1] &= 0x07;
+
+        res
     }
 
     fn sqr(&self) -> Self {
