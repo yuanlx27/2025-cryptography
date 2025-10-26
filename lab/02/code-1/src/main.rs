@@ -68,7 +68,7 @@ impl Add for u131 {
             data: [
                 self.data[0] ^ rhs.data[0],
                 self.data[1] ^ rhs.data[1],
-                0,
+                self.data[2] ^ rhs.data[2],
             ],
         }
     }
@@ -80,7 +80,7 @@ impl Mul for u131 {
     fn mul(self, rhs: Self) -> Self {
         let mut res = Self::default();
         for i in 0..N {
-            if self.data[i / 128] >> (i % 128) & 1 != 0 {
+            if (self.data[i / 128] >> (i % 128)) & 1 != 0 {
                 res = res + (rhs << i);
             }
         }
@@ -96,9 +96,9 @@ impl Shl<usize> for u131 {
             0 => self,
             1..128 => Self {
                 data: [
-                    self.data[0] << rhs,
-                    self.data[1] << rhs ^ self.data[0] >> (128 - rhs),
-                    self.data[2] << rhs ^ self.data[1] >> (128 - rhs),
+                    (self.data[0] << rhs),
+                    (self.data[1] << rhs) ^ (self.data[0] >> (128 - rhs)),
+                    (self.data[2] << rhs) ^ (self.data[1] >> (128 - rhs)),
                 ],
             },
             128 => Self {
@@ -111,8 +111,8 @@ impl Shl<usize> for u131 {
             129..N => Self {
                 data: [
                     0,
-                    self.data[0] << (rhs - 128),
-                    self.data[1] << (rhs - 128) ^ self.data[0] >> (256 - rhs),
+                    (self.data[0] << (rhs - 128)),
+                    (self.data[1] << (rhs - 128)) ^ (self.data[0] >> (256 - rhs)),
                 ],
             },
             _ => panic!("Shift amount out of range."),
@@ -141,17 +141,26 @@ impl u131 {
     fn rem(&self) -> Self {
         let mut res = *self;
 
-        let x = res.data[2] << 125;
-        res.data[0] ^= x ^ (x << 1) ^ (x << 2);
+        let temp = res.data[2] >> 118;
+        res.data[1] ^= temp << 115 ^ temp << 116 ^ temp << 117;
+        res.data[2] ^= temp ^ temp << 118;
 
-        let x = res.data[2] >> 3;
-        res.data[1] ^= x ^ (x << 1) ^ (x << 2) ^ (x << 13);
+        let temp = res.data[2] >> 3;
+        res.data[1] ^= temp ^ temp << 1 ^ temp << 2 ^ temp << 13;
+        res.data[2] ^= temp << 3;
 
-        let x = res.data[1] >> 3;
-        res.data[0] ^= x ^ (x << 1) ^ (x << 2) ^ (x << 13);
+        let temp = res.data[2];
+        res.data[0] ^= temp << 125 ^ temp << 126 ^ temp << 127;
+        res.data[1] ^= temp >> 2 ^ temp >> 1 ^ temp << 10;
+        res.data[2] ^= temp;
 
-        res.data[2] &= 0;
-        res.data[1] &= 0x07;
+        let temp = res.data[1] >> 118;
+        res.data[0] ^= temp << 115 ^ temp << 116 ^ temp << 117;
+        res.data[1] ^= temp ^ temp << 118;
+
+        let temp = res.data[1] >> 3;
+        res.data[0] ^= temp ^ temp << 1 ^ temp << 2 ^ temp << 13;
+        res.data[1] ^= temp << 3;
 
         res
     }
