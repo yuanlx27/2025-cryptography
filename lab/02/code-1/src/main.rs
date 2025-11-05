@@ -118,22 +118,6 @@ impl Mul for u131 {
     }
 }
 
-// impl Div for u131 {
-//     type Output = Self;
-
-//     fn div(self, rhs: Self) -> Self {
-//         let mut rem = self;
-//         let mut res = Self::default();
-//         for i in (0..N).rev() {
-//             if rem.len() == rhs.len() + i {
-//                 rem = rem + (rhs << i);
-//                 res.data[i / 64] |= 1 << (i % 64);
-//             }
-//         }
-//         res
-//     }
-// }
-
 impl Shl<usize> for u131 {
     type Output = Self;
 
@@ -229,7 +213,7 @@ impl u131 {
         let (mut g1, mut g2) = (ONE, ZERO);
         while u != ONE {
             let j = u.deg().checked_sub(v.deg());
-            if j == None {
+            if j.is_none() {
                 swap(&mut u, &mut v);
                 swap(&mut g1, &mut g2);
                 continue;
