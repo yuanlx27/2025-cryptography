@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 fn main() {
     let mut ctx = SHA256::new();
     loop {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 640000];
         let n = io::stdin().read(&mut buf).unwrap();
         if n == 0 {
             break;
@@ -19,6 +19,7 @@ struct SHA256 {
     buffer_len: usize,
     h: [u32; 8],
     len: usize,
+    use_sha_ni: bool,
 }
 
 impl SHA256 {
@@ -28,6 +29,7 @@ impl SHA256 {
             buffer_len: 0,
             h: H,
             len: 0,
+            use_sha_ni: detect_sha_ni(),
         }
     }
 
@@ -74,6 +76,10 @@ impl SHA256 {
     }
 
     fn process_chunk(&mut self, chunk: &[u8]) {
+        if self.use_sha_ni && self.try_process_chunk_sha_ni(chunk) {
+            return;
+        }
+
         let mut w = [0u32; 64];
         chunk.chunks(4).enumerate().for_each(|(i, bytes)| {
             w[i] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -123,6 +129,41 @@ impl SHA256 {
         self.h[6] = self.h[6].wrapping_add(g);
         self.h[7] = self.h[7].wrapping_add(h);
     }
+
+    fn try_process_chunk_sha_ni(&mut self, chunk: &[u8]) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::*;
+
+            let mut w = [0i32; 16];
+            for (i, bytes) in chunk.chunks(4).enumerate() {
+                w[i] = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            }
+
+            let zero = _mm_setzero_si128();
+            let mut w128 = [zero; 16];
+            for (i, words) in w.chunks(4).enumerate() {
+                w128[i] = _mm_set_epi32(words[3], words[2], words[1], words[0]);
+            }
+
+            for i in 4..16 {
+                let x = {
+                    let y = _mm_srli_si128(w128[i - 2], 4);
+                    _mm_insert_epi32(y, _mm_cvtsi128_si32(w128[i - 1]), 3);
+                    _mm_add_epi32(_mm_sha256msg1_epu32(w128[i - 4], w128[i - 3]), y)
+                };
+                w128[i] = _mm_sha256msg2_epu32(x, w128[i - 1]);
+            }
+
+            true
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = chunk;
+            false
+        }
+    }
 }
 
 #[inline(always)]
@@ -153,6 +194,18 @@ fn choice(x: u32, y: u32, z: u32) -> u32 {
 #[inline(always)]
 fn majority(x: u32, y: u32, z: u32) -> u32 {
     (x & y) ^ (x & z) ^ (y & z)
+}
+
+fn detect_sha_ni() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // std::is_x86_feature_detected!("sha")
+        false
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
 }
 
 const H: [u32; 8] = [
