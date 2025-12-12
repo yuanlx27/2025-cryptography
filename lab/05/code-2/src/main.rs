@@ -3,98 +3,164 @@ use std::io;
 use std::io::{Read, Write};
 // Process bytes.
 use byteorder::{BigEndian, ByteOrder};
-// CSPRNG.
-use rand::{TryRngCore, rngs::OsRng};
 
 // ==========================================
 // 1. Constants
 // ==========================================
 const KEY_SIZE: usize = 256; // 2048 bits = 256 bytes
+const PRIME_SIZE: usize = 128; // 1024 bits = 128 bytes
 const HASH_LEN: usize = 32;  // SHA-256 output size
 
 fn main() -> io::Result<()> {
-    // Lock stdin.
+    // We wrap the logic in a helper function.
+    // If it returns None (any error/invalid input), main still returns Ok(()).
+    // This ensures Exit Code 0 and "prints nothing" on failure.
+    if let Some(message) = try_decrypt() {
+        let stdout = io::stdout();
+        let mut handle = stdout.lock();
+        handle.write_all(&message)?;
+    }
+    Ok(())
+}
+
+fn try_decrypt() -> Option<Vec<u8>> {
     let stdin = io::stdin();
     let mut handle = stdin.lock();
 
-    // ==========================================
-    // 2. Input Parsing (Streaming)
-    // ==========================================
-    
-    // 1. Ignore first 16 bytes
-    let mut _discard_16 = [0u8; 16];
-    handle.read_exact(&mut _discard_16)?;
+    // Helper: read exact bytes, return None if EOF or error
+    let mut read_exact = |buf: &mut [u8]| -> Option<()> {
+        handle.read_exact(buf).ok()
+    };
 
-    // 2. Read N (256 bytes)
+    // ==========================================
+    // 2. Input Parsing
+    // ==========================================
+
+    // 1. Read p
+    let mut p_bytes = [0u8; PRIME_SIZE];
+    read_exact(&mut p_bytes)?;
+    let p = BigUint::from_be_bytes(&p_bytes);
+    if p.is_zero() { return None; } // Invalid modulus
+
+    // 2. Read q
+    let mut q_bytes = [0u8; PRIME_SIZE];
+    read_exact(&mut q_bytes)?;
+    let q = BigUint::from_be_bytes(&q_bytes);
+    if q.is_zero() { return None; } // Invalid modulus
+
+    // 3. Read n (skip but read to advance stream)
     let mut n_bytes = [0u8; KEY_SIZE];
-    handle.read_exact(&mut n_bytes)?;
-    let n = BigUint::from_be_bytes(&n_bytes);
+    read_exact(&mut n_bytes)?;
 
-    // 3. Read E (256 bytes)
-    let mut e_bytes = [0u8; KEY_SIZE];
-    handle.read_exact(&mut e_bytes)?;
-    let e = BigUint::from_be_bytes(&e_bytes);
+    // 4. Read d (skip)
+    let mut _d_bytes = [0u8; KEY_SIZE];
+    read_exact(&mut _d_bytes)?;
 
-    // 4. Ignore next 256 bytes (likely D, not needed for encryption)
-    let mut _discard_256 = [0u8; KEY_SIZE];
-    handle.read_exact(&mut _discard_256)?;
+    // 5. Read dP
+    let mut dp_bytes = [0u8; PRIME_SIZE];
+    read_exact(&mut dp_bytes)?;
+    let dp = BigUint::from_be_bytes(&dp_bytes);
 
-    // 5. Read Message Length (1 byte)
-    let mut m_len_buf = [0u8; 1];
-    handle.read_exact(&mut m_len_buf)?;
-    let m_len = m_len_buf[0] as usize;
+    // 6. Read dQ
+    let mut dq_bytes = [0u8; PRIME_SIZE];
+    read_exact(&mut dq_bytes)?;
+    let dq = BigUint::from_be_bytes(&dq_bytes);
 
-    // 6. Read Message Content
-    let mut message = vec![0u8; m_len];
-    handle.read_exact(&mut message)?;
+    // 7. Read qInv
+    let mut qinv_bytes = [0u8; PRIME_SIZE];
+    read_exact(&mut qinv_bytes)?;
+    let qinv = BigUint::from_be_bytes(&qinv_bytes);
 
-    // ==========================================
-    // 3. OAEP Padding
-    // ==========================================
-    // L is empty, lHash = Hash(L)
-    let l_hash = Sha256::digest(&[]);
-
-    // PS (Padding String) - Zeros
-    let ps_len = KEY_SIZE - m_len - 2 * HASH_LEN - 2;
-    let ps = vec![0u8; ps_len];
-
-    // DB = lHash || PS || 0x01 || M
-    let mut db = Vec::with_capacity(KEY_SIZE - HASH_LEN - 1);
-    db.extend_from_slice(&l_hash);
-    db.extend_from_slice(&ps);
-    db.push(0x01);
-    db.extend_from_slice(&message);
-
-    // Generate random Seed using rand crate (CSPRNG)
-    let mut seed = [0u8; HASH_LEN];
-    OsRng.try_fill_bytes(&mut seed).unwrap();
-
-    // MGF1 Masking
-    let db_mask = mgf1(&seed, KEY_SIZE - HASH_LEN - 1);
-    let masked_db: Vec<u8> = db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
-
-    let seed_mask = mgf1(&masked_db, HASH_LEN);
-    let masked_seed: Vec<u8> = seed.iter().zip(seed_mask.iter()).map(|(a, b)| a ^ b).collect();
-
-    // EM = 0x00 || maskedSeed || maskedDB
-    let mut em = Vec::with_capacity(KEY_SIZE);
-    em.push(0x00);
-    em.extend_from_slice(&masked_seed);
-    em.extend_from_slice(&masked_db);
+    // 8. Read Ciphertext
+    let mut c_bytes = [0u8; KEY_SIZE];
+    read_exact(&mut c_bytes)?;
+    let c = BigUint::from_be_bytes(&c_bytes);
 
     // ==========================================
-    // 4. RSA Encryption with Montgomery Reduction
+    // 3. CRT Decryption
     // ==========================================
-    let m_int = BigUint::from_be_bytes(&em);
+
+    // m1 = c^dP mod p
+    // Reduce c mod p first because c is 2048 bits and p is 1024
+    let c_mod_p = c.rem(&p);
+    let m1 = c_mod_p.modpow(&dp, &p);
+
+    // m2 = c^dQ mod q
+    let c_mod_q = c.rem(&q);
+    let m2 = c_mod_q.modpow(&dq, &q);
+
+    // h = (m1 - m2) * qInv mod p
+    // Safe subtraction: if m1 < m2, compute (m1 + p - m2)
+    // Note: m2 is mod q, so it *could* be larger than p if q > p,
+    // so strictly we need m2 % p for the subtraction logic in mod p arithmetic.
+    // However, typically Garner's formula uses values reduced by their respective moduli.
+    // Let's act strictly in mod p:
+    let m2_mod_p = m2.rem(&p);
     
-    // Use the optimized modular exponentiation
-    let c_int = m_int.modpow(&e, &n);
+    let diff = if m1.ge(&m2_mod_p) {
+        let mut tmp = m1;
+        tmp.sub_assign(&m2_mod_p);
+        tmp
+    } else {
+        let mut tmp = m1;
+        tmp.add_assign(&p);
+        tmp.sub_assign(&m2_mod_p);
+        tmp
+    };
 
-    // Output 256 bytes
-    let c_bytes = c_int.to_bytes_be(KEY_SIZE);
-    io::stdout().write_all(&c_bytes)?;
+    // h = diff * qInv mod p
+    let h = diff.mul_mod(&qinv, &p);
 
-    Ok(())
+    // m = m2 + h * q
+    let h_q = h.mul(&q);
+    let mut m = m2;
+    m.add_assign(&h_q);
+
+    // EM (Encoded Message)
+    let em = m.to_bytes_be(KEY_SIZE);
+
+    // ==========================================
+    // 4. OAEP Decoding
+    // ==========================================
+
+    // 1. Check first byte is 0x00
+    if em[0] != 0x00 { return None; }
+
+    let masked_seed = &em[1..1 + HASH_LEN];
+    let masked_db = &em[1 + HASH_LEN..];
+
+    // 2. Recover Seed
+    let seed_mask = mgf1(masked_db, HASH_LEN);
+    let seed: Vec<u8> = masked_seed.iter().zip(seed_mask.iter()).map(|(a, b)| a ^ b).collect();
+
+    // 3. Recover DB
+    let db_mask = mgf1(&seed, KEY_SIZE - HASH_LEN - 1);
+    let db: Vec<u8> = masked_db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+
+    // 4. Verify lHash
+    let l_hash_expected = Sha256::digest(&[]);
+    let l_hash_actual = &db[0..HASH_LEN];
+
+    if l_hash_actual != l_hash_expected.as_slice() { return None; }
+
+    // 5. Find 0x01 separator; verify PS is all zeros
+    let mut separator_idx = usize::MAX;
+    for i in HASH_LEN..db.len() {
+        let b = db[i];
+        if b == 0x01 {
+            separator_idx = i;
+            break;
+        }
+        if b != 0x00 {
+            // PS must be all zeros
+            return None;
+        }
+    }
+
+    if separator_idx == usize::MAX { return None; }
+
+    // 6. Extract Message
+    Some(db[separator_idx + 1..].to_vec())
 }
 
 fn mgf1(seed: &[u8], len: usize) -> Vec<u8> {
@@ -112,17 +178,10 @@ fn mgf1(seed: &[u8], len: usize) -> Vec<u8> {
 }
 
 // ==========================================
-// 5. BigUint Implementation (Montgomery Optimized)
+// 5. BigUint Implementation
 // ==========================================
 
-// We need 2048 bits. 64 bits * 32 = 2048.
-// To handle overflow during multiplication before reduction, we usually need 2x size.
-// 256 bytes = 32 u64 limbs.
-// For Montgomery mul, we keep the `LIMBS` large enough to hold intermediate product.
-// 2048 bits / 64 = 32 limbs.
-// Product is 4096 bits = 64 limbs.
-// So LIMBS = 66 gives us a safe margin for carries.
-const LIMBS: usize = 66; 
+const LIMBS: usize = 66; // Safe margin for 2048 bits + operations
 
 #[derive(Debug, Clone, Copy)]
 struct BigUint {
@@ -131,19 +190,18 @@ struct BigUint {
 
 impl BigUint {
     fn new() -> Self {
-        Self {
-            data: [0u64; LIMBS],
-        }
+        Self { data: [0u64; LIMBS] }
+    }
+
+    fn one() -> Self {
+        let mut s = Self::new();
+        s.data[0] = 1;
+        s
     }
 
     fn from_be_bytes(bytes: &[u8]) -> Self {
         let mut bytes = bytes.to_vec();
         bytes.reverse();
-        Self::from_le_bytes(&bytes)
-    }
-
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        // Ensure we don't buffer overflow if input is huge, though logic says 256 bytes max
         let mut data = [0u64; LIMBS];
         bytes.chunks(8).enumerate().for_each(|(i, chunk)| {
             if i < LIMBS {
@@ -152,10 +210,7 @@ impl BigUint {
                 data[i] = u64::from_le_bytes(arr);
             }
         });
-
-        Self {
-            data,
-        }
+        Self { data }
     }
 
     fn to_bytes_be(&self, width: usize) -> Vec<u8> {
@@ -168,56 +223,26 @@ impl BigUint {
         res
     }
 
-    // Montgomery Modular Exponentiation
     fn modpow(&self, exponent: &BigUint, modulus: &BigUint) -> BigUint {
-        if modulus.is_zero() { panic!("Modulus is zero"); }
-
-        // 1. Precompute constants for Montgomery Reduction
-        // n_prime = -N^(-1) mod 2^64
-        let n_prime = Self::compute_n_prime(modulus.data[0]);
-        
-        // R = 2^(64 * 32) for 2048 bit modulus (assuming modulus fits in 32 limbs)
-        // We need R > N. Since N is 2048 bits, let's define R based on limbs count corresponding to N.
-        // A simpler approach for general code:
-        // Find number of limbs used by modulus.
-        let n_limbs = modulus.limbs_used();
-        // R = 2^(64 * n_limbs)
-        
-        // Calculate R^2 mod N
-        // R is represented by a 1 at bit index (64 * n_limbs).
-        // We construct R^2 by shifting or using BigUint arithmetic, then taking remainder.
-        let mut r_sq = BigUint::new();
-        // To be safe, we can compute 2^(2 * 64 * n_limbs) mod N.
-        // Or simply: compute 2^(64 * n_limbs) % N, then square it mod N.
-        
-        // Construct R % N
-        let mut r_val = BigUint::new();
-        // Set bit at 64 * n_limbs
-        // Since our LIMBS is 66 and n_limbs is likely 32, we can handle this.
-        if n_limbs < LIMBS {
-            r_val.data[n_limbs] = 1; 
-        } else {
-            // Fallback/Error case, though for 2048 bits LIMBS=66 is fine
-             panic!("Modulus too large for configured LIMBS");
+        if modulus.is_zero() {
+            // Fallback or panic, but input checks should prevent this.
+            // Return self as dummy to avoid panic if check missed.
+            return *self; 
         }
-        r_val = r_val.rem(modulus); // R mod N
 
-        // Compute R^2 mod N
-        // We can use standard mul_mod here just once to initialize.
-        r_sq = r_val.mul_mod(&r_val, modulus); 
-
-        // 2. Convert Base to Montgomery Form: A_mont = A * R mod N
-        // We can use mont_mul(A, R^2) -> A * R^2 * R^-1 = A * R
+        let n_prime = Self::compute_n_prime(modulus.data[0]);
+        let n_limbs = modulus.limbs_used();
+        
+        let mut r_val = BigUint::new();
+        if n_limbs < LIMBS { r_val.data[n_limbs] = 1; } 
+        else { return BigUint::new(); } // Error case
+        
+        r_val = r_val.rem(modulus); 
+        let r_sq = r_val.mul_mod(&r_val, modulus); 
         let mut x = self.mont_mul(&r_sq, modulus, n_prime, n_limbs);
+        let mut res = r_val; 
 
-        // 3. Initialize result to 1 in Montgomery Form: 1 * R mod N
-        // We already have R mod N in r_val.
-        let mut res = r_val; // This is 1_mont
-
-        // 4. Binary Exponentiation
-        let total_bits = LIMBS * 64; 
-        // Find highest set bit in exponent to avoid useless loops
-        let mut exp_bits = total_bits;
+        let mut exp_bits = LIMBS * 64; 
         while exp_bits > 0 {
             exp_bits -= 1;
             let limb = exp_bits / 64;
@@ -229,10 +254,7 @@ impl BigUint {
         }
 
         for i in (0..exp_bits).rev() {
-            // Square
             res = res.mont_mul(&res, modulus, n_prime, n_limbs);
-
-            // Multiply if bit is set
             let limb = i / 64;
             let bit = i % 64;
             if (exponent.data[limb] >> bit) & 1 == 1 {
@@ -240,38 +262,21 @@ impl BigUint {
             }
         }
 
-        // 5. Convert back from Montgomery Form: Res = Res_mont * 1 mod N
-        // mont_mul(Res_mont, 1) -> Res * R * 1 * R^-1 = Res
-        let one = {
-            let mut t = BigUint::new();
-            t.data[0] = 1;
-            t
-        };
-        
-        // Standard mont_reduce is effectively mont_mul(val, 1) but with 1 not shifted.
-        // Actually, mont_mul(val, 1) works if 1 is standard '1'.
-        res.mont_mul(&one, modulus, n_prime, n_limbs)
+        res.mont_mul(&BigUint::one(), modulus, n_prime, n_limbs)
     }
 
-    // Standard Montgomery Reduction: T * R^-1 mod N
-    // T is usually product of two numbers in Montgomery form (A*R)*(B*R) = AB*R^2
-    // Result is AB*R
     fn mont_mul(&self, other: &BigUint, n: &BigUint, n_prime: u64, n_limbs: usize) -> BigUint {
-        // 1. Standard Multiplication T = A * B
-        let mut t = [0u64; LIMBS * 2]; // Temporary double width buffer
+        let mut t = [0u64; LIMBS * 2]; 
         
         for i in 0..n_limbs {
             let mut carry: u128 = 0;
             let a_i = self.data[i] as u128;
             if a_i == 0 { continue; }
             for j in 0..n_limbs {
-                let val = a_i * (other.data[j] as u128) 
-                          + (t[i + j] as u128) 
-                          + carry;
+                let val = a_i * (other.data[j] as u128) + (t[i + j] as u128) + carry;
                 t[i + j] = val as u64;
                 carry = val >> 64;
             }
-            // Propagate carry
             let mut k = i + n_limbs;
             while carry > 0 {
                 let val = (t[k] as u128) + carry;
@@ -281,15 +286,8 @@ impl BigUint {
             }
         }
 
-        // 2. Montgomery Reduction
-        // T is now in t[]
-        // We process limb by limb
         for i in 0..n_limbs {
-            // m = (T[i] * n_prime) mod 2^64
             let m = t[i].wrapping_mul(n_prime);
-            
-            // T = T + m * N * 2^(64*i)
-            // Effectively, we add m*N shifted by i limbs to T
             let mut carry: u128 = 0;
             let m_u128 = m as u128;
             
@@ -299,7 +297,6 @@ impl BigUint {
                 carry = val >> 64;
             }
             
-            // Handle carries up the chain
             let mut k = i + n_limbs;
             while carry > 0 {
                 let val = (t[k] as u128) + carry;
@@ -309,8 +306,6 @@ impl BigUint {
             }
         }
 
-        // 3. Result is T / R. Since we added multiples, the lower n_limbs are zero.
-        // We shift right by n_limbs words.
         let mut res = BigUint::new();
         for i in 0..n_limbs + 1 {
             if i + n_limbs < t.len() {
@@ -318,29 +313,19 @@ impl BigUint {
             }
         }
 
-        // 4. Conditional subtraction
         if res.ge(n) {
             res.sub_assign(n);
         }
-        
         res
     }
 
-    // Helper to compute -N^(-1) mod 2^64
     fn compute_n_prime(n0: u64) -> u64 {
         let mut x = n0;
-        // Newton-Raphson iteration for modular inverse
-        // We want x * n0 = 1 mod 2^k
-        // 3-bit approx: x * n0 = 1 mod 8 is always x = n0 for odd n0 (RSA modulus is odd)
-        // Actually for 64-bit, we iterate: x = x * (2 - n0 * x)
-        
         x = x.wrapping_mul(2u64.wrapping_sub(n0.wrapping_mul(x)));
         x = x.wrapping_mul(2u64.wrapping_sub(n0.wrapping_mul(x)));
         x = x.wrapping_mul(2u64.wrapping_sub(n0.wrapping_mul(x)));
         x = x.wrapping_mul(2u64.wrapping_sub(n0.wrapping_mul(x)));
-        x = x.wrapping_mul(2u64.wrapping_sub(n0.wrapping_mul(x))); // 2^64 reached
-
-        // We want -N^(-1), so negate
+        x = x.wrapping_mul(2u64.wrapping_sub(n0.wrapping_mul(x)));
         x.wrapping_neg()
     }
 
@@ -350,10 +335,9 @@ impl BigUint {
                 return i + 1;
             }
         }
-        1 // Avoid 0
+        1
     }
 
-    // Keep fallback mul_mod for precomputation
     fn mul_mod(&self, other: &BigUint, modulus: &BigUint) -> BigUint {
         let product = self.mul(other);
         product.rem(modulus)
@@ -364,11 +348,8 @@ impl BigUint {
         for i in 0..LIMBS {
             let mut carry: u128 = 0;
             if self.data[i] == 0 { continue; }
-            
             for j in 0..(LIMBS - i) {
-                let val = (self.data[i] as u128) * (other.data[j] as u128) 
-                          + (res.data[i + j] as u128) 
-                          + carry;
+                let val = (self.data[i] as u128) * (other.data[j] as u128) + (res.data[i + j] as u128) + carry;
                 res.data[i + j] = val as u64;
                 carry = val >> 64;
             }
@@ -377,42 +358,29 @@ impl BigUint {
     }
 
     fn rem(&self, modulus: &BigUint) -> BigUint {
-        if modulus.is_zero() { panic!("Division by zero"); }
-        
+        if modulus.is_zero() { return BigUint::new(); } // Prevent panic
         let mut remainder = BigUint::new();
-        // Simplistic bit-wise reduction
-        let total_bits = LIMBS * 64;
-        let mut bit_idx = total_bits;
-        
-        // Find MSB of self
+        let mut bit_idx = LIMBS * 64;
         while bit_idx > 0 {
             bit_idx -= 1;
             let limb = bit_idx / 64;
-            let bit = bit_idx % 64;
-            if (self.data[limb] >> bit) & 1 == 1 {
-                bit_idx += 1;
-                break;
+            if (self.data[limb] >> (bit_idx % 64)) & 1 == 1 {
+                bit_idx += 1; break;
             }
         }
-
         for i in (0..bit_idx).rev() {
             remainder.shl_1();
-            let limb = i / 64;
-            let bit = i % 64;
-            let val = (self.data[limb] >> bit) & 1;
-            remainder.data[0] |= val;
-
+            if (self.data[i / 64] >> (i % 64)) & 1 == 1 {
+                remainder.data[0] |= 1;
+            }
             if remainder.ge(modulus) {
                 remainder.sub_assign(modulus);
             }
         }
-
         remainder
     }
 
-    fn is_zero(&self) -> bool {
-        self.data.iter().all(|&x| x == 0)
-    }
+    fn is_zero(&self) -> bool { self.data.iter().all(|&x| x == 0) }
 
     fn ge(&self, other: &BigUint) -> bool {
         for i in (0..LIMBS).rev() {
@@ -429,6 +397,16 @@ impl BigUint {
             let (diff2, b2) = diff.overflowing_sub(borrow);
             self.data[i] = diff2;
             borrow = (if b1 {1} else {0}) + (if b2 {1} else {0});
+        }
+    }
+
+    fn add_assign(&mut self, other: &BigUint) {
+        let mut carry: u64 = 0;
+        for i in 0..LIMBS {
+            let (sum, c1) = self.data[i].overflowing_add(other.data[i]);
+            let (sum2, c2) = sum.overflowing_add(carry);
+            self.data[i] = sum2;
+            carry = (if c1 {1} else {0}) + (if c2 {1} else {0});
         }
     }
 
@@ -491,31 +469,17 @@ impl Sha256 {
         let i = self.datalen;
         self.data[i] = 0x80;
         self.datalen += 1;
-
         if self.datalen > 56 {
-            while self.datalen < 64 {
-                self.data[self.datalen] = 0;
-                self.datalen += 1;
-            }
+            while self.datalen < 64 { self.data[self.datalen] = 0; self.datalen += 1; }
             self.transform();
             self.datalen = 0;
         }
-
-        while self.datalen < 56 {
-            self.data[self.datalen] = 0;
-            self.datalen += 1;
-        }
-
+        while self.datalen < 56 { self.data[self.datalen] = 0; self.datalen += 1; }
         let bits = self.bitlen.to_be_bytes();
-        for (idx, &b) in bits.iter().enumerate() {
-            self.data[56 + idx] = b;
-        }
+        for (idx, &b) in bits.iter().enumerate() { self.data[56 + idx] = b; }
         self.transform();
-
         let mut out = Vec::with_capacity(32);
-        for s in self.state.iter() {
-            out.extend_from_slice(&s.to_be_bytes());
-        }
+        for s in self.state.iter() { out.extend_from_slice(&s.to_be_bytes()); }
         out
     }
     
@@ -535,16 +499,8 @@ impl Sha256 {
             let s1 = m[i - 2].rotate_right(17) ^ m[i - 2].rotate_right(19) ^ (m[i - 2] >> 10);
             m[i] = m[i - 16].wrapping_add(s0).wrapping_add(m[i - 7]).wrapping_add(s1);
         }
-
-        let mut a = self.state[0];
-        let mut b = self.state[1];
-        let mut c = self.state[2];
-        let mut d = self.state[3];
-        let mut e = self.state[4];
-        let mut f = self.state[5];
-        let mut g = self.state[6];
-        let mut h = self.state[7];
-
+        let mut a = self.state[0]; let mut b = self.state[1]; let mut c = self.state[2]; let mut d = self.state[3];
+        let mut e = self.state[4]; let mut f = self.state[5]; let mut g = self.state[6]; let mut h = self.state[7];
         let k = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
             0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -555,7 +511,6 @@ impl Sha256 {
             0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
             0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
         ];
-
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let ch = (e & f) ^ ((!e) & g);
@@ -563,24 +518,11 @@ impl Sha256 {
             let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
             let maj = (a & b) ^ (a & c) ^ (b & c);
             let temp2 = s0.wrapping_add(maj);
-
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
+            h = g; g = f; f = e; e = d.wrapping_add(temp1); d = c; c = b; b = a; a = temp1.wrapping_add(temp2);
         }
-
-        self.state[0] = self.state[0].wrapping_add(a);
-        self.state[1] = self.state[1].wrapping_add(b);
-        self.state[2] = self.state[2].wrapping_add(c);
-        self.state[3] = self.state[3].wrapping_add(d);
-        self.state[4] = self.state[4].wrapping_add(e);
-        self.state[5] = self.state[5].wrapping_add(f);
-        self.state[6] = self.state[6].wrapping_add(g);
-        self.state[7] = self.state[7].wrapping_add(h);
+        self.state[0] = self.state[0].wrapping_add(a); self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c); self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e); self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g); self.state[7] = self.state[7].wrapping_add(h);
     }
 }
